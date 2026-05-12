@@ -22,11 +22,26 @@ from matplotlib.gridspec import GridSpec
 from scipy import signal, stats
 
 
-def load_audio(path: str, mono: bool = False) -> tuple[np.ndarray, int]:
+def load_audio(path: str, mono: bool = False, target_sr: int | None = None) -> tuple[np.ndarray, int]:
     data, sr = sf.read(path, dtype="float64")
     if mono and data.ndim == 2:
         data = data.mean(axis=1)
+    if target_sr is not None and sr != target_sr:
+        data = resample_audio(data, sr, target_sr)
+        sr = target_sr
     return data, sr
+
+
+def resample_audio(data: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample audio to target sample rate using polyphase filtering."""
+    from math import gcd
+    if orig_sr == target_sr:
+        return data
+    g = gcd(orig_sr, target_sr)
+    up, down = target_sr // g, orig_sr // g
+    if data.ndim == 2:
+        return np.stack([signal.resample_poly(data[:, ch], up, down) for ch in range(data.shape[1])], axis=1)
+    return signal.resample_poly(data, up, down)
 
 
 def align_signals(ref: np.ndarray, comp: np.ndarray, sr: int, max_lag_ms: float = 50.0) -> tuple[np.ndarray, np.ndarray, int]:
@@ -411,6 +426,9 @@ Examples:
     parser.add_argument("--max-lag-ms", type=float, default=50.0, help="Max alignment lag in ms (default: 50)")
     parser.add_argument("--no-plot", action="store_true", help="Skip generating plots")
     parser.add_argument("--output", "-o", default=None, help="Output plot file path")
+    parser.add_argument("--target-sr", type=int, default=None,
+                        help="Resample both signals to this rate. If omitted and rates differ, "
+                             "resamples to the lower of the two.")
 
     args = parser.parse_args()
 
@@ -437,10 +455,17 @@ Examples:
         print(f"Loading comparison: {args.comp}")
         ref_sig, sr_ref = load_audio(args.ref, mono=True)
         comp_sig, sr_comp = load_audio(args.comp, mono=True)
-        if sr_ref != sr_comp:
-            print(f"Error: sample rates differ ({sr_ref} vs {sr_comp})", file=sys.stderr)
-            sys.exit(1)
-        sr = sr_ref
+        if sr_ref != sr_comp or args.target_sr is not None:
+            target_sr = args.target_sr or min(sr_ref, sr_comp)
+            if sr_ref != target_sr:
+                print(f"Resampling reference: {sr_ref} Hz -> {target_sr} Hz")
+                ref_sig = resample_audio(ref_sig, sr_ref, target_sr)
+            if sr_comp != target_sr:
+                print(f"Resampling comparison: {sr_comp} Hz -> {target_sr} Hz")
+                comp_sig = resample_audio(comp_sig, sr_comp, target_sr)
+            sr = target_sr
+        else:
+            sr = sr_ref
         ref_label = args.ref_label or Path(args.ref).stem
         comp_label = args.comp_label or Path(args.comp).stem
         output_default = "comparison.png"
