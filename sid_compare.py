@@ -44,6 +44,27 @@ def resample_audio(data: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray
     return signal.resample_poly(data, up, down)
 
 
+def detect_tune_start(x: np.ndarray, sr: int, frame_ms: float = 100.0,
+                      silence_frac: float = 0.10) -> int:
+    """Sample index of the first frame whose RMS clearly exceeds the silence floor.
+
+    Uses a fraction of the *typical loud* level (95th-percentile RMS over 100 ms
+    frames) as the threshold. If the very first frame is already loud, returns 0
+    — i.e. the tune already starts from sample zero. This avoids the pitfall of
+    estimating a "noise floor" from the first 200 ms when the recording has no
+    leading silence at all.
+    """
+    frame = int(sr * frame_ms / 1000)
+    n_frames = len(x) // frame
+    if n_frames < 5:
+        return 0
+    rms_frames = np.sqrt(np.mean(x[: n_frames * frame].reshape(n_frames, frame) ** 2, axis=1))
+    loud_level = float(np.percentile(rms_frames, 95))
+    threshold = silence_frac * loud_level
+    above = np.flatnonzero(rms_frames > threshold)
+    return int(above[0] * frame) if len(above) else 0
+
+
 def align_signals(ref: np.ndarray, comp: np.ndarray, sr: int, max_lag_ms: float = 50.0) -> tuple[np.ndarray, np.ndarray, int]:
     """Align two signals using cross-correlation, compensating for recording delay."""
     max_lag = int(sr * max_lag_ms / 1000)
@@ -429,6 +450,9 @@ Examples:
     parser.add_argument("--target-sr", type=int, default=None,
                         help="Resample both signals to this rate. If omitted and rates differ, "
                              "resamples to the lower of the two.")
+    parser.add_argument("--trim-silence", action="store_true",
+                        help="Detect and trim leading silence in each signal before aligning. "
+                             "Anchors comparison at the first musical event in each file.")
 
     args = parser.parse_args()
 
@@ -471,6 +495,15 @@ Examples:
         output_default = "comparison.png"
 
     print(f"Sample rate: {sr} Hz, Duration: {len(ref_sig)/sr:.2f}s")
+
+    if args.trim_silence:
+        ref_start = detect_tune_start(ref_sig, sr)
+        comp_start = detect_tune_start(comp_sig, sr)
+        print(f"Trimming leading silence: ref={ref_start/sr:.3f}s, comp={comp_start/sr:.3f}s")
+        ref_sig = ref_sig[ref_start:]
+        comp_sig = comp_sig[comp_start:]
+        n = min(len(ref_sig), len(comp_sig))
+        ref_sig, comp_sig = ref_sig[:n], comp_sig[:n]
 
     if not args.no_align:
         print(f"Aligning signals (max lag: {args.max_lag_ms:.1f} ms)...")
