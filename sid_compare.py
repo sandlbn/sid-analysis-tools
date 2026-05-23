@@ -22,10 +22,17 @@ from matplotlib.gridspec import GridSpec
 from scipy import signal, stats
 
 
-def load_audio(path: str, mono: bool = False, target_sr: int | None = None) -> tuple[np.ndarray, int]:
+def load_audio(path: str, mono: bool = False, target_sr: int | None = None,
+               channel: str = "mix") -> tuple[np.ndarray, int]:
+    """Load audio. For stereo files: channel='L' / 'R' / 'mix' (default mean of channels)."""
     data, sr = sf.read(path, dtype="float64")
-    if mono and data.ndim == 2:
-        data = data.mean(axis=1)
+    if data.ndim == 2:
+        if channel == "L":
+            data = data[:, 0]
+        elif channel == "R":
+            data = data[:, 1]
+        elif mono or channel == "mix":
+            data = data.mean(axis=1)
     if target_sr is not None and sr != target_sr:
         data = resample_audio(data, sr, target_sr)
         sr = target_sr
@@ -453,6 +460,10 @@ Examples:
     parser.add_argument("--trim-silence", action="store_true",
                         help="Detect and trim leading silence in each signal before aligning. "
                              "Anchors comparison at the first musical event in each file.")
+    parser.add_argument("--ref-channel", choices=["L", "R", "mix"], default="mix",
+                        help="Channel of reference file to use if stereo (default: mix=mean of L+R)")
+    parser.add_argument("--comp-channel", choices=["L", "R", "mix"], default="mix",
+                        help="Channel of comparison file to use if stereo (default: mix=mean of L+R)")
 
     args = parser.parse_args()
 
@@ -475,10 +486,10 @@ Examples:
         comp_label = args.comp_label or "Right channel"
         output_default = str(Path(args.stereo_file).with_suffix(".png"))
     else:
-        print(f"Loading reference: {args.ref}")
-        print(f"Loading comparison: {args.comp}")
-        ref_sig, sr_ref = load_audio(args.ref, mono=True)
-        comp_sig, sr_comp = load_audio(args.comp, mono=True)
+        print(f"Loading reference: {args.ref}  (channel={args.ref_channel})")
+        print(f"Loading comparison: {args.comp}  (channel={args.comp_channel})")
+        ref_sig, sr_ref = load_audio(args.ref, channel=args.ref_channel)
+        comp_sig, sr_comp = load_audio(args.comp, channel=args.comp_channel)
         if sr_ref != sr_comp or args.target_sr is not None:
             target_sr = args.target_sr or min(sr_ref, sr_comp)
             if sr_ref != target_sr:
